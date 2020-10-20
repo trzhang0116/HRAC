@@ -46,7 +46,7 @@ If you find this work useful in your research, please cite:
 ```
 @inproceedings{zhang2019generating,
   title={Generating adjacency-constrained subgoals in hierarchical reinforcement learning},
-  author={Zhang, Tianren and Guo, Shangqi and Tan, Tian and Hu, Xiaolin and Feng, Chen},
+  author={Zhang, Tianren and Guo, Shangqi and Tan, Tian and Hu, Xiaolin and Chen, Feng},
   booktitle={NeurIPS},
   year={2020}
 }
