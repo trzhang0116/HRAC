@@ -39,7 +39,11 @@ Default `model_dir` is `pretrained_models/`.
 
 ## Pre-trained models
 
-See `pretrained_models/` for pre-trained models on all tasks.
+See `pretrained_models/` for pre-trained models on all tasks. The expected performances of the pre-trained models are as follows (averaged over 100 evaluation episodes):
+
+|Ant Gather|Ant Maze|Ant Maze Sparse|
+|:--:|:--:|:--:|
+|3.0|96%|89%|
 
 ## Citation
 If you find this work useful in your research, please cite:
