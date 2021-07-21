@@ -4,7 +4,7 @@ import numpy as np
 import os
 
 import hrac.hrac as hrac
-from envs import MazeEnv, KeyChestEnv, EnvWithGoal, GatherEnv
+from envs import EnvWithGoal, GatherEnv
 from envs.create_maze_env import create_maze_env
 from envs.create_gather_env import create_gather_env
 

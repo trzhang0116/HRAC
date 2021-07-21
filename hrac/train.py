@@ -394,8 +394,6 @@ def run_hrac(args):
         next_goal = next_tup["desired_goal"]
         next_state = next_tup["observation"]
 
-        # print(next_state)
-
         manager_transition[-2].append(next_state)
         traj_buffer.append(next_state)
 
