@@ -24,5 +24,11 @@ def create_maze_env(env_name=None, seed=0):
   elif env_name.endswith('MazeSparse'):
     maze_id = 'Maze2'
     return AntMazeEnv(maze_id=maze_id, maze_size_scaling=2, seed=seed)
+  elif env_name.endswith('Push'):
+  	maze_id = 'Push'
+  	return AntMazeEnv(maze_id=maze_id, maze_size_scaling=8, seed=seed)
+  elif env_name.endswith('Fall'):
+  	maze_id = 'Fall'
+  	return AntMazeEnv(maze_id=maze_id, maze_size_scaling=8, seed=seed)
   else:
     raise ValueError('Unknown maze environment %s' % env_name)

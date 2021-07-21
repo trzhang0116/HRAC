@@ -4,7 +4,7 @@ import numpy as np
 import os
 
 import hrac.hrac as hrac
-from envs import EnvWithGoal, GatherEnv
+from envs import MazeEnv, KeyChestEnv, EnvWithGoal, GatherEnv
 from envs.create_maze_env import create_maze_env
 from envs.create_gather_env import create_gather_env
 
@@ -35,11 +35,9 @@ def evaluate_policy(env, env_name, manager_policy, controller_policy,
 
                 step_count += 1
                 global_steps += 1
-                action = controller_policy.select_action(state, subgoal)
+                action = controller_policy.select_action(state, subgoal, evaluation=True)
                 new_obs, reward, done, _ = env.step(action)
-                # env.render()
-
-                if not "Gather" in env_name and env.success_fn(reward):
+                if env_name != "AntGather" and env.success_fn(reward):
                     env_goals_achieved += 1
                     goals_achieved += 1
                     done = True
@@ -61,7 +59,7 @@ def evaluate_policy(env, env_name, manager_policy, controller_policy,
 
         print("---------------------------------------")
         print("Evaluation over {} episodes:\nAvg Ctrl Reward: {:.3f}".format(eval_episodes, avg_controller_rew))
-        if "Gather" in env_name:
+        if env_name == "AntGather":
             print("Avg reward: {:.1f}".format(avg_reward))
         else:
             print("Goals achieved: {:.1f}%".format(100*avg_env_finish))
@@ -102,29 +100,32 @@ def get_reward_function(dims, absolute_goal=False, binary_reward=False):
 
 
 def eval_hrac(args):
-    if "Maze" in args.env_name:
-        env = EnvWithGoal(create_maze_env(args.env_name, args.seed), args.env_name)
-    else:
+    if args.env_name == "AntGather":
         env = GatherEnv(create_gather_env(args.env_name, args.seed), args.env_name)
-
-    if "Ant" in args.env_name:
-        low = np.array((-10, -10, -0.5, -1, -1, -1, -1,
-                        -0.5, -0.3, -0.5, -0.3, -0.5, -0.3, -0.5, -0.3))
-        max_action = float(env.action_space.high[0])
+        env.seed(args.seed)   
+    elif args.env_name in ["AntMaze", "AntMazeSparse", "AntPush", "AntFall"]:
+        env = EnvWithGoal(create_maze_env(args.env_name, args.seed), args.env_name)
+        env.seed(args.seed)
     else:
         raise NotImplementedError
 
+    low = np.array((-10, -10, -0.5, -1, -1, -1, -1,
+                    -0.5, -0.3, -0.5, -0.3, -0.5, -0.3, -0.5, -0.3))
+    max_action = float(env.action_space.high[0])
     high = -low
-    man_scale = (high - low)/2
-
-    controller_goal_dim = 2
-
+    man_scale = (high - low) / 2
+    if args.env_name == "AntFall":
+        controller_goal_dim = 3
+    else:
+        controller_goal_dim = 2
     if args.absolute_goal:
-        man_scale[0] = 12
-        man_scale[1] = 12
+        man_scale[0] = 30
+        man_scale[1] = 30
         no_xy = False
     else:
         no_xy = True
+    action_dim = env.action_space.shape[0]
+    discrete = False
 
     obs = env.reset()
 
@@ -137,16 +138,16 @@ def eval_hrac(args):
     file_name = "{}_{}_{}".format(args.env_name, args.algo, args.seed)
     output_data = {"frames": [], "reward": [], "dist": []}    
 
-    env.seed(args.seed)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
     state_dim = state.shape[0]
-    if args.env_name == "AntMaze":
+    if args.env_name in ["AntMaze", "AntPush", "AntFall"]:
         goal_dim = goal.shape[0]
     else:
         goal_dim = 0
-    action_dim = env.action_space.shape[0]
 
     controller_policy = hrac.Controller(
         state_dim=state_dim,

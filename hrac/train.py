@@ -16,6 +16,12 @@ from envs.create_maze_env import create_maze_env
 from envs.create_gather_env import create_gather_env
 
 
+"""
+HIRO part adapted from
+https://github.com/bhairavmehta95/data-efficient-hrl/blob/master/hiro/train_hiro.py
+"""
+
+
 def evaluate_policy(env, env_name, manager_policy, controller_policy,
                     calculate_controller_reward, ctrl_rew_scale,
                     manager_propose_frequency=10, eval_idx=0, eval_episodes=5):
@@ -42,9 +48,9 @@ def evaluate_policy(env, env_name, manager_policy, controller_policy,
 
                 step_count += 1
                 global_steps += 1
-                action = controller_policy.select_action(state, subgoal)
+                action = controller_policy.select_action(state, subgoal, evaluation=True)
                 new_obs, reward, done, _ = env.step(action)
-                if not "Gather" in env_name and env.success_fn(reward):
+                if env_name != "AntGather" and env.success_fn(reward):
                     env_goals_achieved += 1
                     goals_achieved += 1
                     done = True
@@ -66,7 +72,7 @@ def evaluate_policy(env, env_name, manager_policy, controller_policy,
 
         print("---------------------------------------")
         print("Evaluation over {} episodes:\nAvg Ctrl Reward: {:.3f}".format(eval_episodes, avg_controller_rew))
-        if "Gather" in env_name:
+        if env_name == "AntGather":
             print("Avg reward: {:.1f}".format(avg_reward))
         else:
             print("Goals achieved: {:.1f}%".format(100*avg_env_finish))
@@ -82,7 +88,7 @@ def get_reward_function(dims, absolute_goal=False, binary_reward=False):
         def controller_reward(z, subgoal, next_z, scale):
             z = z[:dims]
             next_z = next_z[:dims]
-            reward = float(np.linalg.norm(subgoal - next_z, axis=-1) <= 0.1) * scale
+            reward = float(np.linalg.norm(subgoal - next_z, axis=-1) <= 1.414) * scale
             return reward
     elif absolute_goal:
         def controller_reward(z, subgoal, next_z, scale):
@@ -94,7 +100,7 @@ def get_reward_function(dims, absolute_goal=False, binary_reward=False):
         def controller_reward(z, subgoal, next_z, scale):
             z = z[:dims]
             next_z = next_z[:dims]
-            reward = float(np.linalg.norm(z + subgoal - next_z, axis=-1) <= 0.1) * scale
+            reward = float(np.linalg.norm(z + subgoal - next_z, axis=-1) <= 1.414) * scale
             return reward
     else:
         def controller_reward(z, subgoal, next_z, scale):
@@ -106,17 +112,43 @@ def get_reward_function(dims, absolute_goal=False, binary_reward=False):
     return controller_reward
 
 
-def is_goal_unreachable(a_net, state, goal, goal_dim, margin, device, absolute_goal=False):
-    state = torch.from_numpy(state[:goal_dim]).float().to(device)
-    goal = torch.from_numpy(goal).float().to(device)
-    if not absolute_goal:
-        goal = state + goal
-    inputs = torch.stack((state, goal), dim=0)
-    outputs = a_net(inputs)
-    s_embedding = outputs[0]
-    g_embedding = outputs[1]
-    dist = F.pairwise_distance(s_embedding.unsqueeze(0), g_embedding.unsqueeze(0)).squeeze()
-    return dist > margin
+def update_amat_and_train_anet(n_states, adj_mat, state_list, state_dict, a_net, traj_buffer,
+        optimizer_r, controller_goal_dim, device, args):
+    for traj in traj_buffer.get_trajectory():
+        for i in range(len(traj)):
+            for j in range(1, min(args.manager_propose_freq, len(traj) - i)):
+                s1 = tuple(np.round(traj[i][:controller_goal_dim]).astype(np.int32))
+                s2 = tuple(np.round(traj[i+j][:controller_goal_dim]).astype(np.int32))
+                if s1 not in state_list:
+                    state_list.append(s1)
+                    state_dict[s1] = n_states
+                    n_states += 1
+                if s2 not in state_list:
+                    state_list.append(s2)
+                    state_dict[s2] = n_states
+                    n_states += 1
+                adj_mat[state_dict[s1], state_dict[s2]] = 1
+                adj_mat[state_dict[s2], state_dict[s1]] = 1
+    print("Explored states: {}".format(n_states))
+    flags = np.ones((30, 30))
+    for s in state_list:
+        flags[int(s[0]), int(s[1])] = 0
+    print(flags)
+    if not args.load_adj_net:
+        print("Training adjacency network...")
+        utils.train_adj_net(a_net, state_list, adj_mat[:n_states, :n_states],
+                            optimizer_r, args.r_margin_pos, args.r_margin_neg,
+                            n_epochs=args.r_training_epochs, batch_size=args.r_batch_size,
+                            device=device, verbose=False)
+
+        if args.save_models:
+            r_filename = os.path.join("./models", "{}_{}_a_network.pth".format(args.env_name, args.algo))
+            torch.save(a_net.state_dict(), r_filename)
+            print("----- Adjacency network {} saved. -----".format(episode_num))
+
+    traj_buffer.reset()
+
+    return n_states
 
 
 def run_hrac(args):
@@ -131,31 +163,33 @@ def run_hrac(args):
     output_dir = os.path.join(args.log_dir, args.algo)
     print("Logging in {}".format(output_dir))
 
-    if "Maze" in args.env_name:
-        env = EnvWithGoal(create_maze_env(args.env_name, args.seed), args.env_name)
-    else:
+    if args.env_name == "AntGather":
         env = GatherEnv(create_gather_env(args.env_name, args.seed), args.env_name)
-
-    if "Ant" in args.env_name:
-        low = np.array((-10, -10, -0.5, -1, -1, -1, -1,
-                        -0.5, -0.3, -0.5, -0.3, -0.5, -0.3, -0.5, -0.3))
-        max_action = float(env.action_space.high[0])
-        policy_noise = 0.2
-        noise_clip = 0.5
+        env.seed(args.seed)   
+    elif args.env_name in ["AntMaze", "AntMazeSparse", "AntPush", "AntFall"]:
+        env = EnvWithGoal(create_maze_env(args.env_name, args.seed), args.env_name)
+        env.seed(args.seed)
     else:
         raise NotImplementedError
 
+    low = np.array((-10, -10, -0.5, -1, -1, -1, -1,
+                    -0.5, -0.3, -0.5, -0.3, -0.5, -0.3, -0.5, -0.3))
+    max_action = float(env.action_space.high[0])
+    policy_noise = 0.2
+    noise_clip = 0.5
     high = -low
-    man_scale = (high - low)/2
-
-    controller_goal_dim = 2
-
+    man_scale = (high - low) / 2
+    if args.env_name == "AntFall":
+        controller_goal_dim = 3
+    else:
+        controller_goal_dim = 2
     if args.absolute_goal:
-        man_scale[0] = 12
-        man_scale[1] = 12
+        man_scale[0] = 30
+        man_scale[1] = 30
         no_xy = False
     else:
         no_xy = True
+    action_dim = env.action_space.shape[0]
 
     obs = env.reset()
 
@@ -169,16 +203,16 @@ def run_hrac(args):
     file_name = "{}_{}_{}".format(args.env_name, args.algo, args.seed)
     output_data = {"frames": [], "reward": [], "dist": []}    
 
-    env.seed(args.seed)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
     state_dim = state.shape[0]
-    if args.env_name == "AntMaze":
+    if args.env_name in ["AntMaze", "AntPush", "AntFall"]:
         goal_dim = goal.shape[0]
     else:
         goal_dim = 0
-    action_dim = env.action_space.shape[0]
 
     controller_policy = hrac.Controller(
         state_dim=state_dim,
@@ -205,6 +239,7 @@ def run_hrac(args):
         goal_loss_coeff=args.goal_loss_coeff,
         absolute_goal=args.absolute_goal
     )
+
     calculate_controller_reward = get_reward_function(
         controller_goal_dim, absolute_goal=args.absolute_goal, binary_reward=args.binary_int_reward)
 
@@ -254,6 +289,7 @@ def run_hrac(args):
     done = True
     evaluations = []
 
+    # Train
     while total_timesteps < args.max_timesteps:
         if done:
             if total_timesteps != 0 and not just_loaded:
@@ -261,8 +297,7 @@ def run_hrac(args):
                     print("Episode {}".format(episode_num))
                 # Train controller
                 ctrl_act_loss, ctrl_crit_loss = controller_policy.train(controller_buffer, episode_timesteps,
-                                                                        args.ctrl_batch_size, args.ctrl_discount,
-                                                                        args.ctrl_tau)
+                    batch_size=args.ctrl_batch_size, discount=args.ctrl_discount, tau=args.ctrl_soft_sync_rate)
                 if episode_num % 10 == 0:
                     print("Controller actor loss: {:.3f}".format(ctrl_act_loss))
                     print("Controller critic loss: {:.3f}".format(ctrl_crit_loss))
@@ -277,10 +312,10 @@ def run_hrac(args):
                     timesteps_since_manager = 0
                     r_margin = (args.r_margin_pos + args.r_margin_neg) / 2
 
-                    man_act_loss, man_crit_loss, man_goal_loss = manager_policy.train(controller_policy, manager_buffer,
-                                                                       ceil(episode_timesteps/args.train_manager_freq),
-                                                                       batch_size=args.man_batch_size, discount=args.discount,
-                                                                       tau=args.man_tau, a_net=a_net, r_margin=r_margin)
+                    man_act_loss, man_crit_loss, man_goal_loss = manager_policy.train(controller_policy,
+                        manager_buffer, ceil(episode_timesteps/args.train_manager_freq),
+                        batch_size=args.man_batch_size, discount=args.man_discount, tau=args.man_soft_sync_rate,
+                        a_net=a_net, r_margin=r_margin)
                     
                     writer.add_scalar("data/manager_actor_loss", man_act_loss, total_timesteps)
                     writer.add_scalar("data/manager_critic_loss", man_crit_loss, total_timesteps)
@@ -295,19 +330,19 @@ def run_hrac(args):
                 if timesteps_since_eval >= args.eval_freq:
                     timesteps_since_eval = 0
                     avg_ep_rew, avg_controller_rew, avg_steps, avg_env_finish =\
-                        evaluate_policy(env, args.env_name, manager_policy, controller_policy, calculate_controller_reward,
-                                        args.ctrl_rew_scale, args.manager_propose_freq, len(evaluations))
+                        evaluate_policy(env, args.env_name, manager_policy, controller_policy,
+                            calculate_controller_reward, args.ctrl_rew_scale, args.manager_propose_freq,
+                            len(evaluations))
 
                     writer.add_scalar("eval/avg_ep_rew", avg_ep_rew, total_timesteps)
                     writer.add_scalar("eval/avg_controller_rew", avg_controller_rew, total_timesteps)
-                    if "Maze" in args.env_name:
-                        writer.add_scalar("eval/avg_steps_to_finish", avg_steps, total_timesteps)
-                        writer.add_scalar("eval/perc_env_goal_achieved", avg_env_finish, total_timesteps)
 
                     evaluations.append([avg_ep_rew, avg_controller_rew, avg_steps])
                     output_data["frames"].append(total_timesteps)
-                    if "Maze" in args.env_name:
+                    if args.env_name == "AntGather":
                         output_data["reward"].append(avg_env_finish)
+                        writer.add_scalar("eval/avg_steps_to_finish", avg_steps, total_timesteps)
+                        writer.add_scalar("eval/perc_env_goal_achieved", avg_env_finish, total_timesteps)
                     else:
                         output_data["reward"].append(avg_ep_rew)
                     output_data["dist"].append(-avg_controller_rew)
@@ -317,39 +352,8 @@ def run_hrac(args):
                         manager_policy.save("./models", args.env_name, args.algo)
 
                 if traj_buffer.full():
-                    for traj in traj_buffer.get_trajectory():
-                        for i in range(len(traj)):
-                            for j in range(1, min(args.manager_propose_freq, len(traj) - i)):
-                                s1 = tuple(np.round(traj[i][:controller_goal_dim]).astype(np.int32))
-                                s2 = tuple(np.round(traj[i+j][:controller_goal_dim]).astype(np.int32))
-                                if s1 not in state_list:
-                                    state_list.append(s1)
-                                    state_dict[s1] = n_states
-                                    n_states += 1
-                                if s2 not in state_list:
-                                    state_list.append(s2)
-                                    state_dict[s2] = n_states
-                                    n_states += 1
-                                adj_mat[state_dict[s1], state_dict[s2]] = 1
-                                adj_mat[state_dict[s2], state_dict[s1]] = 1
-                    print("Explored states: {}".format(n_states))
-                    flags = np.ones((25, 25))
-                    for s in state_list:
-                        flags[int(s[0]), int(s[1])] = 0
-                    print(flags)
-                    if not args.load_adj_net:
-                        print("Training adjacency network...")
-                        utils.train_adj_net(a_net, state_list, adj_mat[:n_states, :n_states],
-                                            optimizer_r, args.r_margin_pos, args.r_margin_neg,
-                                            n_epochs=args.r_training_epochs, batch_size=args.r_batch_size,
-                                            device=device, verbose=True)
-
-                        if args.save_models:
-                            r_filename = os.path.join("./models", "{}_{}_a_network.pth".format(args.env_name, args.algo))
-                            torch.save(a_net.state_dict(), r_filename)
-                            print("----- Adjacency network {} saved. -----".format(episode_num))
-
-                    traj_buffer.reset()
+                     n_states = update_amat_and_train_anet(n_states, adj_mat, state_list, state_dict, a_net, traj_buffer,
+                        optimizer_r, controller_goal_dim, device, args)
 
                 if len(manager_transition[-2]) != 1:                    
                     manager_transition[1] = state
@@ -368,46 +372,46 @@ def run_hrac(args):
             episode_num += 1
 
             subgoal = manager_policy.sample_goal(state, goal)
+            if not args.absolute_goal:
+                subgoal = man_noise.perturb_action(subgoal,
+                    min_action=-man_scale[:controller_goal_dim], max_action=man_scale[:controller_goal_dim])
+            else:
+                subgoal = man_noise.perturb_action(subgoal,
+                    min_action=np.zeros(controller_goal_dim), max_action=2*man_scale[:controller_goal_dim])
+
             timesteps_since_subgoal = 0
- 
             manager_transition = [state, None, goal, subgoal, 0, False, [state], []]
 
         action = controller_policy.select_action(state, subgoal)
         action = ctrl_noise.perturb_action(action, -max_action, max_action)
         action_copy = action.copy()
 
-        next_tup, manager_reward, env_done, _ = env.step(action_copy)
+        next_tup, manager_reward, done, _ = env.step(action_copy)
 
-        # Update cumulative reward for the manager
         manager_transition[4] += manager_reward * args.man_rew_scale
+        manager_transition[-1].append(action)
 
         next_goal = next_tup["desired_goal"]
         next_state = next_tup["observation"]
 
-        traj_buffer.append(next_state)
+        # print(next_state)
 
-        # Append low level sequence for off policy correction
-        manager_transition[-1].append(action)
         manager_transition[-2].append(next_state)
+        traj_buffer.append(next_state)
 
         controller_reward = calculate_controller_reward(state, subgoal, next_state, args.ctrl_rew_scale)
         subgoal = controller_policy.subgoal_transition(state, subgoal, next_state)
 
         controller_goal = subgoal
-        if env_done:
-            done = True
-
         episode_reward += controller_reward
 
-        # Store low level transition
         if args.inner_dones:
             ctrl_done = done or timesteps_since_subgoal % args.manager_propose_freq == 0
         else:
             ctrl_done = done
 
         controller_buffer.add(
-            (state, next_state, controller_goal, action,
-             controller_reward, float(ctrl_done), [], []))
+            (state, next_state, controller_goal, action, controller_reward, float(ctrl_done), [], []))
 
         state = next_state
         goal = next_goal
@@ -423,7 +427,6 @@ def run_hrac(args):
             manager_transition[5] = float(done)
 
             manager_buffer.add(manager_transition)
-
             subgoal = manager_policy.sample_goal(state, goal)
 
             if not args.absolute_goal:
@@ -431,30 +434,28 @@ def run_hrac(args):
                     min_action=-man_scale[:controller_goal_dim], max_action=man_scale[:controller_goal_dim])
             else:
                 subgoal = man_noise.perturb_action(subgoal,
-                    min_action=-man_scale[:controller_goal_dim]+8, max_action=man_scale[:controller_goal_dim]+8)
+                    min_action=np.zeros(controller_goal_dim), max_action=2*man_scale[:controller_goal_dim])
 
-            # Reset number of timesteps since we sampled a subgoal
             timesteps_since_subgoal = 0
-
-            # Create a high level transition
             manager_transition = [state, None, goal, subgoal, 0, False, [state], []]
 
     # Final evaluation
     avg_ep_rew, avg_controller_rew, avg_steps, avg_env_finish = evaluate_policy(
-                                        env, args.env_name, manager_policy, controller_policy,
-                                        calculate_controller_reward, args.ctrl_rew_scale,
-                                        args.manager_propose_freq, len(evaluations))
+        env, args.env_name, manager_policy, controller_policy, calculate_controller_reward,
+        args.ctrl_rew_scale, args.manager_propose_freq, len(evaluations))
     evaluations.append([avg_ep_rew, avg_controller_rew, avg_steps])
     output_data["frames"].append(total_timesteps)
-    if "Maze" in args.env_name:    
-        output_data["reward"].append(avg_env_finish)
-    else:
+    if args.env_name == 'AntGather':
         output_data["reward"].append(avg_ep_rew)
+    else:
+        output_data["reward"].append(avg_env_finish)
     output_data["dist"].append(-avg_controller_rew)
 
     if args.save_models:
         controller_policy.save("./models", args.env_name, args.algo)
         manager_policy.save("./models", args.env_name, args.algo)
+
+    writer.close()
 
     output_df = pd.DataFrame(output_data)
     output_df.to_csv(os.path.join("./results", file_name+".csv"), float_format="%.4f", index=False)

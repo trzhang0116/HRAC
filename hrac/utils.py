@@ -5,19 +5,20 @@ import torch.utils.data as Data
 
 import numpy as np
 
-# Code based on: 
-# https://github.com/openai/baselines/blob/master/baselines/deepq/replay_buffer.py
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 # Simple replay buffer
 class ReplayBuffer(object):
-    def __init__(self, maxsize=1e6, batch_size=100):
+    def __init__(self, maxsize=1e6):
         self.storage = [[] for _ in range(8)]
         self.maxsize = maxsize
         self.next_idx = 0
-        self.batch_size = batch_size
+
+    def clear(self):
+        self.storage = [[] for _ in range(8)]
+        self.next_idx = 0
 
     # Expects tuples of (x, x', g, u, r, d, x_seq, a_seq)
     def add(self, data):
@@ -30,7 +31,10 @@ class ReplayBuffer(object):
         self.next_idx = (self.next_idx + 1) % self.maxsize
 
     def sample(self, batch_size):
-        ind = np.random.randint(0, len(self.storage[0]), size=batch_size)
+        if len(self.storage[0]) <= batch_size:
+            ind = np.arange(len(self.storage[0]))
+        else:
+            ind = np.random.randint(0, len(self.storage[0]), size=batch_size)
 
         x, y, g, u, r, d, x_seq, a_seq = [], [], [], [], [], [], [], []          
 
@@ -68,7 +72,7 @@ class ReplayBuffer(object):
         return len(self.storage[0])
 
 
-class TrajectoryBuffer:
+class TrajectoryBuffer(object):
 
     def __init__(self, capacity):
         self._capacity = capacity
@@ -113,8 +117,9 @@ class NormalNoise(object):
 
     def perturb_action(self, action, min_action=-np.inf, max_action=np.inf):
         action = (action + np.random.normal(0, self.sigma,
-            size=action.shape[0])).clip(min_action, max_action)
+            size=action.shape)).clip(min_action, max_action)
         return action
+
 
 class OUNoise(object):
     def __init__(self, action_dim, mu=0, theta=0.15, sigma=0.3):

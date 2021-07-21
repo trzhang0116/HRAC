@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 class Actor(nn.Module):
     def __init__(self, state_dim, goal_dim, action_dim, max_action):
-        super(Actor, self).__init__()
+        super().__init__()
 
         self.l1 = nn.Linear(state_dim + goal_dim, 300)
         self.l2 = nn.Linear(300, 300)
@@ -13,19 +13,22 @@ class Actor(nn.Module):
         
         self.max_action = max_action
     
-    def forward(self, x, g=None):
+    def forward(self, x, g=None, nonlinearity='tanh'):
         if g is not None:
             x = F.relu(self.l1(torch.cat([x, g], 1)))
         else:
             x = F.relu(self.l1(x))
         x = F.relu(self.l2(x))
-        x = self.max_action * torch.tanh(self.l3(x)) 
-        return x 
+        if nonlinearity == 'tanh':
+            x = self.max_action * torch.tanh(self.l3(x)) 
+        elif nonlinearity == 'sigmoid':
+            x = self.max_action * torch.sigmoid(self.l3(x))
+        return x
 
 
 class Critic(nn.Module):
     def __init__(self, state_dim, goal_dim, action_dim):
-        super(Critic, self).__init__()
+        super().__init__()
 
         # Q1 architecture
         self.l1 = nn.Linear(state_dim + goal_dim + action_dim, 300)
@@ -66,7 +69,7 @@ class Critic(nn.Module):
 
 class ControllerActor(nn.Module):
     def __init__(self, state_dim, goal_dim, action_dim, scale=1):
-        super(ControllerActor, self).__init__()
+        super().__init__()
         if scale is None:
             scale = torch.ones(state_dim)
         self.scale = nn.Parameter(torch.tensor(scale).float(),
@@ -79,7 +82,7 @@ class ControllerActor(nn.Module):
 
 class ControllerCritic(nn.Module):
     def __init__(self, state_dim, goal_dim, action_dim):
-        super(ControllerCritic, self).__init__()
+        super().__init__()
 
         self.critic = Critic(state_dim, goal_dim, action_dim)
     
@@ -92,7 +95,7 @@ class ControllerCritic(nn.Module):
 
 class ManagerActor(nn.Module):
     def __init__(self, state_dim, goal_dim, action_dim, scale=None, absolute_goal=False):
-        super(ManagerActor, self).__init__()
+        super().__init__()
         if scale is None:
             scale = torch.ones(action_dim)
         self.scale = nn.Parameter(torch.tensor(scale[:action_dim]).float(), requires_grad=False)
@@ -101,14 +104,14 @@ class ManagerActor(nn.Module):
     
     def forward(self, x, g):
         if self.absolute_goal:
-            return self.scale * self.actor(x, g) + 8.
+            return self.scale * self.actor(x, g, nonlinearity='sigmoid')
         else:
             return self.scale * self.actor(x, g)
 
 
 class ManagerCritic(nn.Module):
     def __init__(self, state_dim, goal_dim, action_dim):
-        super(ManagerCritic, self).__init__()
+        super().__init__()
         self.critic = Critic(state_dim, goal_dim, action_dim)
 
     def forward(self, x, g, u):

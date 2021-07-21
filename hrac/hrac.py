@@ -8,6 +8,12 @@ from hrac.models import ControllerActor, ControllerCritic, \
     ManagerActor, ManagerCritic
 
 
+"""
+HIRO part adapted from
+https://github.com/bhairavmehta95/data-efficient-hrl/blob/master/hiro/hiro.py
+"""
+
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -33,29 +39,23 @@ class Manager(object):
                  noise_clip=0.5, goal_loss_coeff=0, absolute_goal=False):
         self.scale = scale
         self.actor = ManagerActor(state_dim, goal_dim, action_dim,
-                                  scale=scale, absolute_goal=absolute_goal)
+                                  scale=scale, absolute_goal=absolute_goal).to(device)
         self.actor_target = ManagerActor(state_dim, goal_dim, action_dim,
-                                         scale=scale)
+                                         scale=scale).to(device)
         self.actor_target.load_state_dict(self.actor.state_dict())
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
 
-        self.critic = ManagerCritic(state_dim, goal_dim, action_dim)
-        self.critic_target = ManagerCritic(state_dim, goal_dim, action_dim)
+        self.critic = ManagerCritic(state_dim, goal_dim, action_dim).to(device)
+        self.critic_target = ManagerCritic(state_dim, goal_dim, action_dim).to(device)
 
         self.critic_target.load_state_dict(self.critic.state_dict())
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),
-                                                 lr=critic_lr,
-                                                 weight_decay=0.0001)
+                                                 lr=critic_lr, weight_decay=0.0001)
 
         self.action_norm_reg = 0
 
-        if torch.cuda.is_available():
-            self.actor = self.actor.to(device)
-            self.actor_target = self.actor_target.to(device)
-            self.critic = self.critic.to(device)
-            self.critic_target = self.critic_target.to(device)
-
         self.criterion = nn.SmoothL1Loss()
+        # self.criterion = nn.MSELoss()
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.candidate_goals = candidate_goals
@@ -150,6 +150,7 @@ class Manager(object):
         for it in range(iterations):
             # Sample replay buffer
             x, y, g, sgorig, r, d, xobs_seq, a_seq = replay_buffer.sample(batch_size)
+            batch_size = min(batch_size, x.shape[0])
 
             if self.correction and not self.absolute_goal:
                 sg = self.off_policy_corrections(controller_policy, batch_size,
@@ -247,41 +248,34 @@ class Manager(object):
 
 class Controller(object):
     def __init__(self, state_dim, goal_dim, action_dim, max_action, actor_lr,
-                 critic_lr, repr_dim=15, no_xy=True,
-                 policy_noise=0.2, noise_clip=0.5, absolute_goal=False
+                 critic_lr, repr_dim=15, no_xy=True, policy_noise=0.2, noise_clip=0.5,
+                 absolute_goal=False
     ):
-        self.actor = ControllerActor(state_dim, goal_dim, action_dim,
-                                     scale=max_action)
-        self.actor_target = ControllerActor(state_dim, goal_dim, action_dim,
-                                            scale=max_action)
-        self.actor_target.load_state_dict(self.actor.state_dict())
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(),
-            lr=actor_lr)
-
-        self.critic = ControllerCritic(state_dim, goal_dim, action_dim)
-        self.critic_target = ControllerCritic(state_dim, goal_dim, action_dim)
-        self.critic_target.load_state_dict(self.critic.state_dict())
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),
-            lr=critic_lr, weight_decay=0.0001)
-
-        self.no_xy = no_xy
-
-        self.subgoal_transition = self.subgoal_transition
-
-        if torch.cuda.is_available():
-            self.actor = self.actor.to(device)
-            self.actor_target = self.actor_target.to(device)
-            self.critic = self.critic.to(device)
-            self.critic_target = self.critic_target.to(device)
-
-        self.criterion = nn.SmoothL1Loss()
         self.state_dim = state_dim
         self.goal_dim = goal_dim
         self.action_dim = action_dim
         self.max_action = max_action
+        self.no_xy = no_xy
         self.policy_noise = policy_noise
         self.noise_clip = noise_clip
         self.absolute_goal = absolute_goal
+        self.criterion = nn.SmoothL1Loss()    
+        # self.criterion = nn.MSELoss()
+
+        self.actor = ControllerActor(state_dim, goal_dim, action_dim,
+                                     scale=max_action).to(device)
+        self.actor_target = ControllerActor(state_dim, goal_dim, action_dim,
+                                            scale=max_action).to(device)
+        self.actor_target.load_state_dict(self.actor.state_dict())
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(),
+            lr=actor_lr)
+
+        self.critic = ControllerCritic(state_dim, goal_dim, action_dim).to(device)
+        self.critic_target = ControllerCritic(state_dim, goal_dim, action_dim).to(device)
+        self.critic_target.load_state_dict(self.critic.state_dict())
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),
+            lr=critic_lr, weight_decay=0.0001)
+
 
     def clean_obs(self, state, dims=2):
         if self.no_xy:
@@ -298,15 +292,10 @@ class Controller(object):
         else:
             return state
 
-    def select_action(self, state, sg, to_numpy=True):
-        state = get_tensor(state)
+    def select_action(self, state, sg, evaluation=False):
+        state = self.clean_obs(get_tensor(state))
         sg = get_tensor(sg)
-        state = self.clean_obs(state)
-
-        if to_numpy:
-            return self.actor(state, sg).cpu().data.numpy().squeeze()
-        else:
-            return self.actor(state, sg).squeeze()
+        return self.actor(state, sg).cpu().data.numpy().squeeze()
 
     def value_estimate(self, state, sg, action):
         state = self.clean_obs(get_tensor(state))
@@ -333,11 +322,8 @@ class Controller(object):
         return subgoals
 
     def train(self, replay_buffer, iterations, batch_size=100, discount=0.99, tau=0.005):
-
         avg_act_loss, avg_crit_loss = 0., 0.
-
         for it in range(iterations):
-            # Sample replay buffer
             x, y, sg, u, r, d, _, _ = replay_buffer.sample(batch_size)
             next_g = get_tensor(self.subgoal_transition(x, sg, y))
             state = self.clean_obs(get_tensor(x))
@@ -353,8 +339,7 @@ class Controller(object):
             next_action = torch.min(next_action, self.actor.scale)
             next_action = torch.max(next_action, -self.actor.scale)
 
-            target_Q1, target_Q2 = self.critic_target(next_state, next_g,
-                                          next_action)
+            target_Q1, target_Q2 = self.critic_target(next_state, next_g, next_action)
             target_Q = torch.min(target_Q1, target_Q2)
             target_Q = reward + (done * discount * target_Q)
             target_Q_no_grad = target_Q.detach()
@@ -389,7 +374,7 @@ class Controller(object):
             for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
                 target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
-        return avg_act_loss / iterations, avg_crit_loss / iterations 
+        return avg_act_loss / iterations, avg_crit_loss / iterations
 
     def save(self, dir, env_name, algo):
         torch.save(self.actor.state_dict(), "{}/{}_{}_ControllerActor.pth".format(dir, env_name, algo))
