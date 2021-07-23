@@ -258,7 +258,7 @@ def run_hrac(args):
     n_states = 0
     state_list = []
     state_dict = {}
-    adj_mat = np.diag(np.ones(1000, dtype=np.uint8))
+    adj_mat = np.diag(np.ones(1500, dtype=np.uint8))
     traj_buffer = utils.TrajectoryBuffer(capacity=args.traj_buffer_size)
     a_net = ANet(controller_goal_dim, args.r_hidden_dim, args.r_embedding_dim)
     if args.load_adj_net:
@@ -340,11 +340,11 @@ def run_hrac(args):
                     evaluations.append([avg_ep_rew, avg_controller_rew, avg_steps])
                     output_data["frames"].append(total_timesteps)
                     if args.env_name == "AntGather":
+                        output_data["reward"].append(avg_ep_rew)
+                    else:
                         output_data["reward"].append(avg_env_finish)
                         writer.add_scalar("eval/avg_steps_to_finish", avg_steps, total_timesteps)
                         writer.add_scalar("eval/perc_env_goal_achieved", avg_env_finish, total_timesteps)
-                    else:
-                        output_data["reward"].append(avg_ep_rew)
                     output_data["dist"].append(-avg_controller_rew)
 
                     if args.save_models:
