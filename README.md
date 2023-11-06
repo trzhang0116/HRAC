@@ -1,5 +1,5 @@
 # HRAC
-This is a PyTorch implementation for our paper "[Generating Adjacency-Constrained Subgoals in Hierarchical Reinforcement Learning](https://arxiv.org/abs/2006.11485)" (NeurIPS 2020).
+This is a PyTorch implementation for our paper "[Generating Adjacency-Constrained Subgoals in Hierarchical Reinforcement Learning](https://arxiv.org/abs/2006.11485)" (NeurIPS 2020 spotlight).
 
 ## Dependencies
 - Python 3.6
@@ -7,11 +7,11 @@ This is a PyTorch implementation for our paper "[Generating Adjacency-Constraine
 - OpenAI Gym
 - MuJoCo
 
-Also, to run the MuJoCo experiments, a license is required (see [here](https://www.roboti.us/license.html)).
+~~Also, to run the MuJoCo experiments, a license is required (see [here](https://www.roboti.us/license.html)).~~
 
 ## Usage
 
-**Update:** implementation for discrete control tasks is in `discrete/` folder; please refer to the usage therein.
+**Update:** implementation for discrete control tasks is in the `discrete/` folder; please refer to the usage therein.
 
 ### Training
 - Ant Gather
@@ -52,7 +52,7 @@ See `pretrained_models/` for pre-trained models on all tasks. The expected perfo
 ## Citation
 If you find this work useful in your research, please cite:
 ```
-@inproceedings{zhang2019generating,
+@inproceedings{zhang2020generating,
   title={Generating adjacency-constrained subgoals in hierarchical reinforcement learning},
   author={Zhang, Tianren and Guo, Shangqi and Tan, Tian and Hu, Xiaolin and Chen, Feng},
   booktitle={NeurIPS},
